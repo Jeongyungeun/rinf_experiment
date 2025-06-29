@@ -70,3 +70,25 @@
 //         }
 //     }
 // }
+
+use crate::signals::SampleNumberInput;
+use messages::{actor::Actor, prelude::Address};
+use tokio::task::JoinSet;
+
+pub struct CountingActor {
+    count: i32,
+    _owned_tasks: JoinSet<()>,
+}
+
+impl Actor for CountingActor {}
+
+impl CountingActor {
+    pub fn new(self_addr: Address<Self>) -> Self {
+        let mut owned_tasks = JoinSet::new();
+        owned_tasks.spawn(Self::listen_to_button_click(self_addr));
+    }
+
+    async fn listen_to_button_click(mut self_addr: Address<Self>) {
+        let receiver = SampleNumberInput::get_dart_signal_receiver();
+    }
+}
