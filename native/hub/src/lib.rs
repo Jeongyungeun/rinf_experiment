@@ -4,6 +4,7 @@
 mod actors;
 mod signals;
 mod tutorial_functions;
+mod study_actors;
 
 use async_trait::async_trait;
 use messages::{
@@ -14,7 +15,7 @@ use messages::{
 use rinf::{dart_shutdown, debug_print, write_interface};
 use tokio::spawn;
 
-use crate::tutorial_functions::{calculate_precious_data, stream_amazing_number, tell_treasure};
+// use crate::tutorial_functions::{calculate_precious_data, stream_amazing_number, tell_treasure};
 
 // Uncomment below to target the web.
 // use tokio_with_wasm::alias as tokio;
@@ -61,9 +62,15 @@ async fn main() {
     // spawn(calculate_precious_data());
     // spawn(stream_amazing_number());
     // spawn(tell_treasure());
+    
+    // 기존 액터 생성 및 테스트
     let mut addr = create_actors();
     let _ = addr.notify(Sum(10, 5)).await;
-    dart_shutdown();
+    
+    // study_actors 모듈 초기화
+    debug_print!("Initializing study_actors module...");
+    spawn(study_actors::initialize());
+    debug_print!("study_actors module initialization started");
 
     // Keep the main function running until Dart shutdown.
     dart_shutdown().await;
