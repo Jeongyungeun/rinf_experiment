@@ -10,8 +10,7 @@ use tokio::task::JoinSet;
 
 use crate::study_actors::{
     messages::{
-        CacheData, DataItem, FetchData, FetchRecentData, StoreData, UpdateNetworkDependency,
-        UserData, UserError, UserId,
+        CacheData, DataItem, FetchData, FetchRecentData, StoreData, UserData, UserError, UserId,
     },
     signals::{
         CreateDataItemRequest, DataItemCreatedSignal, DataItemDeletedSignal, DataItemUpdatedSignal,
@@ -25,30 +24,18 @@ use super::NetworkManagerActor;
 pub struct DataManagerActor {
     cache_actor: Address<CacheActor>,
     storage_actor: Address<StorageActor>,
-    network_manager: Address<NetworkManagerActor>,
+    network_manager: Option<Address<NetworkManagerActor>>,
     _owned_tasks: JoinSet<()>,
 }
 
 impl Actor for DataManagerActor {}
 
 impl DataManagerActor {
-    pub fn new(network_manager: Address<NetworkManagerActor>) -> Self {
-        // 캐시 액터 생성
-        let cache_context = Context::new();
-        let cache_addr = cache_context.address();
-        let cache_actor = CacheActor::new();
-        tokio::spawn(cache_context.run(cache_actor));
-
-        // 저장소 액터 생성
-        let storage_context = Context::new();
-        let storage_addr = storage_context.address();
-        let storage_actor = StorageActor::new();
-        tokio::spawn(storage_context.run(storage_actor));
-
+    pub fn new(cache_actor: Address<CacheActor>, storage_actor: Address<StorageActor>) -> Self {
         Self {
-            cache_actor: cache_addr,
-            storage_actor: storage_addr,
-            network_manager,
+            cache_actor,
+            storage_actor,
+            network_manager: None,
             _owned_tasks: JoinSet::new(),
         }
     }
@@ -56,13 +43,19 @@ impl DataManagerActor {
     fn generate_item_id(&self) -> String {
         format!("item_{}", Utc::now().timestamp_millis())
     }
+
+    // 네트워크 매니저 액터 주소를 설정하는 메서드 추가
+    pub fn set_network_manager(&mut self, network_manager: Address<NetworkManagerActor>) {
+        debug_print!("Setting network manager for DataManagerActor");
+        self.network_manager = Some(network_manager);
+    }
 }
 
 #[async_trait]
 impl Handler<FetchData> for DataManagerActor {
-    type Response = Result<Vec<u8>, UserError>;
+    type Result = Result<Vec<u8>, UserError>;
 
-    async fn handle(&mut self, msg: FetchData, _: &Context<Self>) -> Self::Response {
+    async fn handle(&mut self, msg: FetchData, _: &Context<Self>) -> Self::Result {
         // 1. 먼저 캐시에서 확인
         let cache_result = self.cache_actor.send(msg.clone()).await;
 
@@ -97,9 +90,9 @@ impl Handler<FetchData> for DataManagerActor {
 
 #[async_trait]
 impl Handler<StoreData> for DataManagerActor {
-    type Response = Result<(), UserError>;
+    type Result = Result<(), UserError>;
 
-    async fn handle(&mut self, msg: StoreData, _: &Context<Self>) -> Self::Response {
+    async fn handle(&mut self, msg: StoreData, _: &Context<Self>) -> Self::Result {
         // 1. 저장소에 저장
         let storage_result = self.storage_actor.send(msg.clone()).await??;
 
@@ -119,9 +112,9 @@ impl Handler<StoreData> for DataManagerActor {
 
 #[async_trait]
 impl Handler<FetchRecentData> for DataManagerActor {
-    type Response = Result<UserData, UserError>;
+    type Result = Result<UserData, UserError>;
 
-    async fn handle(&mut self, msg: FetchRecentData, _: &Context<Self>) -> Self::Response {
+    async fn handle(&mut self, msg: FetchRecentData, _: &Context<Self>) -> Self::Result {
         // 실제 구현에서는 저장소에서 사용자의 최근 데이터 가져오기
         let limit = msg.limit.unwrap_or(10);
 
@@ -143,14 +136,6 @@ impl Handler<FetchRecentData> for DataManagerActor {
         };
 
         Ok(user_data)
-    }
-}
-
-#[async_trait]
-impl Notifiable<UpdateNetworkDependency> for DataManagerActor {
-    async fn notify(&mut self, msg: UpdateNetworkDependency, _: &Context<Self>) {
-        debug_print!("Updating network dependency for DataManagerActor");
-        self.network_manager = msg.0;
     }
 }
 
@@ -264,12 +249,11 @@ struct CacheEntry {
 impl Actor for CacheActor {}
 
 impl CacheActor {
-    pub fn new() -> Self {
+    pub fn new(addr: Address<Self>) -> Self {
         let mut owned_tasks = JoinSet::new();
-        let self_addr = Address::<Self>::default(); // 임시 주소
 
         // 캐시 정리 작업 시작
-        owned_tasks.spawn(Self::cleanup_cache(self_addr));
+        owned_tasks.spawn(Self::cleanup_cache(addr));
 
         Self {
             cache: HashMap::new(),
@@ -293,9 +277,9 @@ impl CacheActor {
 
 #[async_trait]
 impl Handler<FetchData> for CacheActor {
-    type Response = Result<Vec<u8>, UserError>;
+    type Result = Result<Vec<u8>, UserError>;
 
-    async fn handle(&mut self, msg: FetchData, _: &Context<Self>) -> Self::Response {
+    async fn handle(&mut self, msg: FetchData, _: &Context<Self>) -> Self::Result {
         if let Some(entry) = self.cache.get(&msg.key) {
             // 만료 확인
             if let Some(expires_at) = entry.expires_at {
@@ -314,9 +298,9 @@ impl Handler<FetchData> for CacheActor {
 
 #[async_trait]
 impl Handler<CacheData> for CacheActor {
-    type Response = Result<(), UserError>;
+    type Result = Result<(), UserError>;
 
-    async fn handle(&mut self, msg: CacheData, _: &Context<Self>) -> Self::Response {
+    async fn handle(&mut self, msg: CacheData, _: &Context<Self>) -> Self::Result {
         let expires_at = msg.ttl.map(|ttl| self.get_current_timestamp() + ttl);
 
         self.cache.insert(
@@ -349,9 +333,9 @@ impl StorageActor {
 
 #[async_trait]
 impl Handler<FetchData> for StorageActor {
-    type Response = Result<Vec<u8>, UserError>;
+    type Result = Result<Vec<u8>, UserError>;
 
-    async fn handle(&mut self, msg: FetchData, _: &Context<Self>) -> Self::Response {
+    async fn handle(&mut self, msg: FetchData, _: &Context<Self>) -> Self::Result {
         // 실제 구현에서는 파일 시스템이나 데이터베이스에서 데이터 가져오기
         Err("Storage implementation not available".into())
     }
@@ -359,9 +343,9 @@ impl Handler<FetchData> for StorageActor {
 
 #[async_trait]
 impl Handler<StoreData> for StorageActor {
-    type Response = Result<(), UserError>;
+    type Result = Result<(), UserError>;
 
-    async fn handle(&mut self, msg: StoreData, _: &Context<Self>) -> Self::Response {
+    async fn handle(&mut self, msg: StoreData, _: &Context<Self>) -> Self::Result {
         // 실제 구현에서는 파일 시스템이나 데이터베이스에 데이터 저장
         debug_print!(
             "Storing data for key: {}, size: {} bytes",

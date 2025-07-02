@@ -3,37 +3,90 @@ use messages::{
     actor::Actor,
     prelude::{Address, Context, Handler, Notifiable},
 };
-use rinf::{debug_print, RustSignal};
-use std::collections::HashMap;
+use reqwest::{
+    self, Body, Error, Method, Response, StatusCode,
+    header::{HeaderMap, HeaderName, HeaderValue},
+};
+use rinf::{RustSignal, debug_print};
+use serde::{Deserialize, Serialize};
+use std::{collections::HashMap, str::FromStr, time::Duration};
 use tokio::task::JoinSet;
 
 use crate::study_actors::messages::UserError;
 
 // 네트워크 요청 타입
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct NetworkRequest {
     pub url: String,
-    pub method: HttpMethod,
-    pub headers: HashMap<String, String>,
-    pub body: Option<Vec<u8>>,
+    pub method: Method,
+    pub headers: HeaderMap,
+    pub body: Option<Body>,
     pub timeout_ms: Option<u64>,
+    pub json: Option<serde_json::Value>,
+}
+
+impl NetworkRequest {
+    pub fn new(url: impl Into<String>) -> Self {
+        Self {
+            url: url.into(),
+            method: Method::GET,
+            headers: HeaderMap::new(),
+            body: None,
+            timeout_ms: None,
+            json: None,
+        }
+    }
+
+    pub fn method(mut self, method: Method) -> Self {
+        self.method = method;
+        self
+    }
+
+    pub fn header(mut self, key: &str, value: &str) -> Self {
+        if let (Ok(name), Ok(val)) = (HeaderName::from_str(key), HeaderValue::from_str(value)) {
+            self.headers.insert(name, val);
+        }
+        self
+    }
+
+    pub fn timeout(mut self, ms: u64) -> Self {
+        self.timeout_ms = Some(ms);
+        self
+    }
+
+    pub fn body(mut self, body: impl Into<Body>) -> Self {
+        self.body = Some(body.into());
+        self
+    }
+
+    pub fn json<T: Serialize>(mut self, json: &T) -> Self {
+        if let Ok(value) = serde_json::to_value(json) {
+            self.json = Some(value);
+        }
+        self
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct NetworkResponse {
-    pub status_code: u16,
-    pub headers: HashMap<String, String>,
+    pub status: StatusCode,
+    pub headers: HeaderMap,
     pub body: Vec<u8>,
     pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub enum HttpMethod {
-    Get,
-    Post,
-    Put,
-    Delete,
-    Patch,
+impl NetworkResponse {
+    pub fn is_success(&self) -> bool {
+        self.status.is_success() && self.error.is_none()
+    }
+
+    pub fn json<T: for<'de> Deserialize<'de>>(&self) -> Result<T, serde_json::Error> {
+        serde_json::from_slice(&self.body)
+    }
+
+    pub fn text(&self) -> Result<String, std::string::FromUtf8Error> {
+        String::from_utf8(self.body.clone())
+    }
 }
 
 // 네트워크 관리자 액터
@@ -47,19 +100,24 @@ impl Actor for NetworkManagerActor {}
 
 impl NetworkManagerActor {
     pub fn new() -> Self {
-        let mut owned_tasks = JoinSet::new();
-        let self_addr = Address::<Self>::default(); // 임시 주소
-        
-        // 네트워크 상태 모니터링 작업 시작
-        owned_tasks.spawn(Self::monitor_network_status(self_addr));
-        
+        let owned_tasks = JoinSet::new();
+
         Self {
             connection_pool: HashMap::new(),
             max_connections: 10,
             _owned_tasks: owned_tasks,
         }
     }
-    
+
+    fn started(&mut self, ctx: &Context<Self>) {
+        // actor가 인스턴스화 되고 context에서 주소를 얻는 방법이 일반적이다.
+        let self_addr = ctx.address();
+
+        // 네트워크 상태 모니터링 작업 시작
+        self._owned_tasks
+            .spawn(Self::monitor_network_status(self_addr));
+    }
+
     async fn monitor_network_status(_self_addr: Address<Self>) {
         // 실제 구현에서는 주기적으로 네트워크 상태 확인
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(30));
@@ -68,7 +126,7 @@ impl NetworkManagerActor {
             // 실제 구현에서는 self_addr.notify(CheckNetworkStatus).await 호출
         }
     }
-    
+
     fn extract_domain(&self, url: &str) -> String {
         // 간단한 도메인 추출 (실제 구현에서는 더 정교한 방법 필요)
         url.split("://")
@@ -83,65 +141,93 @@ impl NetworkManagerActor {
 
 #[async_trait]
 impl Handler<NetworkRequest> for NetworkManagerActor {
-    type Response = Result<NetworkResponse, UserError>;
-    
-    async fn handle(&mut self, msg: NetworkRequest, _: &Context<Self>) -> Self::Response {
+    type Result = Result<NetworkResponse, UserError>;
+
+    async fn handle(&mut self, msg: NetworkRequest, _: &Context<Self>) -> Self::Result {
         let domain = self.extract_domain(&msg.url);
-        
+
         // 연결 수 증가
         let connection_count = self.connection_pool.entry(domain.clone()).or_insert(0);
         *connection_count += 1;
-        
+
         // 최대 연결 수 초과 확인
         if *connection_count > self.max_connections as u32 {
             *connection_count -= 1;
-            return Err(format!("Too many connections to domain: {}", domain).into());
+            return Err(Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Too many connections to domain: {}", domain),
+            )) as UserError);
         }
-        
-        // 실제 HTTP 요청 수행 (여기서는 시뮬레이션)
-        debug_print!(
-            "Sending {} request to {}",
-            format!("{:?}", msg.method),
-            msg.url
-        );
-        
-        // 요청 시뮬레이션 (실제 구현에서는 reqwest 등의 HTTP 클라이언트 사용)
-        let response = match msg.method {
-            HttpMethod::Get => {
-                // GET 요청 시뮬레이션
-                NetworkResponse {
-                    status_code: 200,
-                    headers: HashMap::new(),
-                    body: b"Sample response data".to_vec(),
-                    error: None,
-                }
-            }
-            HttpMethod::Post => {
-                // POST 요청 시뮬레이션
-                NetworkResponse {
-                    status_code: 201,
-                    headers: HashMap::new(),
-                    body: b"{\"id\": \"123\", \"status\": \"created\"}".to_vec(),
-                    error: None,
-                }
-            }
-            _ => {
-                // 기타 요청 시뮬레이션
-                NetworkResponse {
-                    status_code: 200,
-                    headers: HashMap::new(),
-                    body: b"OK".to_vec(),
-                    error: None,
-                }
-            }
+
+        debug_print!("Sending {} request to {}", msg.method.as_str(), msg.url);
+
+        // reqwest 클라이언트 생성
+        let client = reqwest::Client::builder();
+
+        // 타임아웃 설정
+        let client = if let Some(timeout) = msg.timeout_ms {
+            client.timeout(Duration::from_millis(timeout))
+        } else {
+            client
         };
-        
+
+        let client = client.build().map_err(|e| {
+            debug_print!("Failed to build HTTP client: {}", e);
+            Box::new(std::io::Error::new(
+                std::io::ErrorKind::Other,
+                format!("Network error: Failed to build HTTP client: {}", e),
+            )) as UserError
+        })?;
+
+        // 요청 생성
+        let mut request_builder = client.request(msg.method.clone(), &msg.url);
+
+        // 헤더 설정
+        request_builder = request_builder.headers(msg.headers.clone());
+
+        // JSON 또는 바디 설정
+        if let Some(json) = msg.json {
+            request_builder = request_builder.json(&json);
+        } else if let Some(body) = msg.body {
+            request_builder = request_builder.body(body);
+        }
+
+        // 요청 실행
+        let result = match request_builder.send().await {
+            Ok(resp) => {
+                let status = resp.status();
+                let headers = resp.headers().clone();
+
+                // 응답 바디 읽기
+                match resp.bytes().await {
+                    Ok(bytes) => NetworkResponse {
+                        status,
+                        headers,
+                        body: bytes.to_vec(),
+                        error: None,
+                    },
+                    Err(e) => NetworkResponse {
+                        status,
+                        headers,
+                        body: Vec::new(),
+                        error: Some(format!("Failed to read response body: {}", e)),
+                    },
+                }
+            }
+            Err(e) => NetworkResponse {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                headers: HeaderMap::new(),
+                body: Vec::new(),
+                error: Some(format!("Request failed: {}", e)),
+            },
+        };
+
         // 연결 수 감소
         if let Some(count) = self.connection_pool.get_mut(&domain) {
             *count = count.saturating_sub(1);
         }
-        
-        Ok(response)
+
+        Ok(result)
     }
 }
 
@@ -149,6 +235,7 @@ impl Handler<NetworkRequest> for NetworkManagerActor {
 struct CheckNetworkStatus;
 
 #[async_trait]
+/// NetworkManagerActor가 CheckNetworkStatus를 받았을때 어떻게 하는지를 나타낸다.
 impl Notifiable<CheckNetworkStatus> for NetworkManagerActor {
     async fn notify(&mut self, _: CheckNetworkStatus, _: &Context<Self>) {
         debug_print!("Checking network status...");

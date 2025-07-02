@@ -38,7 +38,7 @@ impl AuthActor {
         }
     }
     
-    async fn check_token_expiry(self_addr: Address<Self>) {
+    async fn check_token_expiry(mut self_addr: Address<Self>) {
         let mut interval = tokio::time::interval(std::time::Duration::from_secs(60));
         loop {
             interval.tick().await;
@@ -87,9 +87,9 @@ impl Notifiable<CheckExpiredTokens> for AuthActor {
 
 #[async_trait]
 impl Handler<Login> for AuthActor {
-    type Response = Result<AuthResult, AuthError>;
+    type Result = Result<AuthResult, AuthError>;
     
-    async fn handle(&mut self, msg: Login, _: &Context<Self>) -> Self::Response {
+    async fn handle(&mut self, msg: Login, _: &Context<Self>) -> Self::Result {
         // 실제 구현에서는 데이터베이스 확인 등의 인증 로직 필요
         if msg.username == "demo" && msg.password == "password" {
             let user_id = "user_1".to_string();
@@ -128,9 +128,9 @@ impl Handler<Login> for AuthActor {
 
 #[async_trait]
 impl Handler<Logout> for AuthActor {
-    type Response = Result<(), AuthError>;
+    type Result = Result<(), AuthError>;
     
-    async fn handle(&mut self, msg: Logout, _: &Context<Self>) -> Self::Response {
+    async fn handle(&mut self, msg: Logout, _: &Context<Self>) -> Self::Result {
         if let Some(session) = self.active_sessions.remove(&msg.token) {
             // 인증 상태 변경 알림
             AuthStateChanged {
@@ -148,9 +148,9 @@ impl Handler<Logout> for AuthActor {
 
 #[async_trait]
 impl Handler<VerifyToken> for AuthActor {
-    type Response = Result<UserId, AuthError>;
+    type Result = Result<UserId, AuthError>;
     
-    async fn handle(&mut self, msg: VerifyToken, _: &Context<Self>) -> Self::Response {
+    async fn handle(&mut self, msg: VerifyToken, _: &Context<Self>) -> Self::Result {
         if let Some(session) = self.active_sessions.get(&msg.token) {
             if session.expires_at > self.get_current_timestamp() {
                 Ok(session.user_id.clone())

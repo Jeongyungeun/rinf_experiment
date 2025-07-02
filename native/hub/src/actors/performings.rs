@@ -21,8 +21,8 @@ impl Actor for PerformingActor {}
 impl PerformingActor {
     pub fn new(self_addr: Address<Self>) -> Self {
         let mut owned_tasks = JoinSet::new();
-        owned_tasks.spawn(Self::run_debug_tests());
-        owned_tasks.spawn(Self::stream_fractal(self_addr));
+        // owned_tasks.spawn(Self::run_debug_tests());
+        // owned_tasks.spawn(Self::stream_fractal(self_addr));
         PerformingActor {
             _owned_tasks: owned_tasks,
         }
@@ -49,5 +49,5 @@ impl PerformingActor {
     #[cfg(not(debug_assertions))]
     const IS_DEBUG_MODE: bool = false;
 
-    async fn stream_fractal(mut self_addr:Address<>)
+    // async fn stream_fractal(mut self_addr:Address<>)
 }

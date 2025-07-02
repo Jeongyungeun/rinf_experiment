@@ -1,5 +1,6 @@
-use serde::{Deserialize, Serialize};
 use super::UserId;
+use messages::prelude::Address;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FetchData {
@@ -44,5 +45,5 @@ pub struct DataItem {
     pub updated_at: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct UpdateNetworkDependency(pub messages::prelude::Address<super::super::actors::NetworkManagerActor>);
+#[derive(Debug, Clone)]
+pub struct UpdateNetworkDependency(pub Address<super::super::actors::NetworkManagerActor>);
